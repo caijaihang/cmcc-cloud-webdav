@@ -13,8 +13,7 @@ import json
 import hashlib
 from datetime import datetime
 
-from wsgidav.dav_provider import DAVProvider, DAVCollection, DAVNonCollection, DAVResource
-from wsgidav import util
+from wsgidav.dav_provider import DAVProvider, DAVCollection, DAVNonCollection
 
 from cmcc_api import CMCCCloudAPI, ROOT_FOLDER_ID
 
