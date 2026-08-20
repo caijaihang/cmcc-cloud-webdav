@@ -10,9 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (如 v1.0.0)'
+        description: '版本号 (如 v1.0.0)，留空则只打包不发Release'
         required: false
         default: ''
+
+permissions:
+  contents: write
+  actions: read
+  packages: write
 
 jobs:
   build:
@@ -110,7 +115,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Release (manual dispatch)
+      - name: Create Release (manual dispatch with version)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.version != ''
         uses: softprops/action-gh-release@v2
         with:
