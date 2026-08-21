@@ -111,6 +111,17 @@ class WebUIManager:
 
     def _wsgi_app(self, environ, start_response):
         path = environ.get("PATH_INFO", "/")
+        method = environ.get("REQUEST_METHOD", "GET")
+        # 处理 CORS 预检请求
+        if method == "OPTIONS":
+            start_response("200 OK", [
+                ("Content-Type", "text/plain"),
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Allow-Methods", "POST, GET, OPTIONS"),
+                ("Access-Control-Allow-Headers", "Content-Type"),
+                ("Access-Control-Max-Age", "86400"),
+            ])
+            return [b""]
         if path == "/" or path == "/index":
             return self._handle_index(environ, start_response)
         elif path == "/config":
@@ -321,7 +332,12 @@ class WebUIManager:
                     result = {"success": False, "message": "Cookie为空"}
             except Exception as e:
                 result = {"success": False, "message": str(e)}
-        start_response("200 OK", [("Content-Type", "application/json")])
+        start_response("200 OK", [
+            ("Content-Type", "application/json"),
+            ("Access-Control-Allow-Origin", "*"),
+            ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+            ("Access-Control-Allow-Headers", "Content-Type"),
+        ])
         return [json.dumps(result).encode()]
 
     def _api_bookmark(self, environ, start_response):
