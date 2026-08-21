@@ -76,16 +76,19 @@ class CMCCCloudAPI:
         }
 
         # 设置Authorization
-        if self.phone and self.auth_token:
+        if self.cookie_str:
+            self.session.headers.update({"Cookie": self.cookie_str})
+            self._parse_cookie()
+            # 从Cookie的authorization字段直接提取Authorization头，确保和浏览器一致
+            match = re.search(r'authorization=([^;]+)', self.cookie_str)
+            if match:
+                auth_val = unquote(match.group(1)).strip()
+                self.base_headers["Authorization"] = auth_val
+                print(f"[DEBUG] Authorization from cookie: {auth_val[:50]}...")
+        elif self.phone and self.auth_token:
             auth_raw = f"pc:{self.phone}:{self.auth_token}"
             auth_b64 = base64.b64encode(auth_raw.encode()).decode()
             self.base_headers["Authorization"] = f"Basic {auth_b64}"
-
-        # 设置Cookie
-        if self.cookie_str:
-            self.session.headers.update({"Cookie": self.cookie_str})
-            # 尝试从cookie中提取auth_token和phone
-            self._parse_cookie()
 
     def _parse_cookie(self):
         """从Cookie字符串解析关键信息"""
