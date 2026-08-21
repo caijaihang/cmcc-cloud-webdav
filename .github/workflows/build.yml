@@ -59,6 +59,8 @@ jobs:
             --hidden-import wsgidav.wsgidav_app `
             --hidden-import wsgidav.dav_provider `
             --hidden-import wsgidav.dir_browser `
+            --hidden-import wsgidav.property_manager `
+            --hidden-import wsgidav.lock_manager `
             --hidden-import requests `
             --hidden-import PIL `
             --hidden-import PIL.Image `
@@ -78,6 +80,8 @@ jobs:
             --hidden-import wsgidav.wsgidav_app `
             --hidden-import wsgidav.dav_provider `
             --hidden-import wsgidav.dir_browser `
+            --hidden-import wsgidav.property_manager `
+            --hidden-import wsgidav.lock_manager `
             --hidden-import requests `
             --hidden-import PIL `
             --hidden-import PIL.Image `
