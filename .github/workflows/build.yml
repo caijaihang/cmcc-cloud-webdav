@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (如 v1.0.0)，留空则只打包不发Release'
+        description: '0.0.1'
         required: false
         default: ''
 
