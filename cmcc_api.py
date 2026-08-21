@@ -96,10 +96,15 @@ class CMCCCloudAPI:
         if match:
             self.auth_token = unquote(match.group(1))
         # 提取phone (从authorization cookie)
-        match = re.search(r'authorization=Basic%20([^;]+)', self.cookie_str)
+        match = re.search(r'authorization=Basic(?:%20|\s)([^;]+)', self.cookie_str)
+        if not match:
+            match = re.search(r'authorization=([^;]+)', self.cookie_str)
         if match:
             try:
-                auth_decoded = base64.b64decode(unquote(match.group(1))).decode()
+                auth_val = unquote(match.group(1)).strip()
+                if auth_val.startswith('Basic '):
+                    auth_val = auth_val[6:]
+                auth_decoded = base64.b64decode(auth_val).decode()
                 parts = auth_decoded.split(':')
                 if len(parts) >= 2:
                     self.phone = parts[1]

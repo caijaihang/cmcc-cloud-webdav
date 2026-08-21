@@ -183,6 +183,7 @@ class CMCCCloudWebDAV:
         if action == "start":
             if self.running:
                 return {"success": True, "message": "服务已在运行"}
+            self.config = self._load_config()  # 重新加载配置
             success, msg = self._start_webdav()
             return {"success": success, "message": msg}
         elif action == "stop":
