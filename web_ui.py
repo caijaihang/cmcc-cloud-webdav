@@ -247,7 +247,7 @@ class WebUIManager:
         return [html.encode("utf-8")]
 
     def _handle_logs(self, environ, start_response):
-        logs_html = "\\n".join([
+        logs_html = "\n".join([
             f'<div class="log-entry"><span style="color:#858585">{l["time"]}</span> '
             f'<span style="color:{"#4ec9b0" if l["level"]=="info" else "#f44747"}">[{l["level"].upper()}]</span> {l["message"]}</div>'
             for l in reversed(self._logs[-200:])

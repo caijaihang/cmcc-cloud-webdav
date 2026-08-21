@@ -102,7 +102,7 @@ class CMCCCloudWebDAV:
         """启动WebDAV服务"""
         if not self.api:
             if not self._init_api():
-                return False
+                return False, "API初始化失败"
                 
         webdav_cfg = self.config.get("webdav", {})
         host = webdav_cfg.get("host", "0.0.0.0")
@@ -112,19 +112,18 @@ class CMCCCloudWebDAV:
         # 创建提供者
         provider = CMCCCloudProvider(self.api)
         
-        # WsgiDAV配置
+        # WsgiDAV配置 (简化版，避免打包后模块缺失)
         dav_config = {
             "host": host,
             "port": port,
             "provider_mapping": {"/": provider},
             "verbose": 1,
-            "logging": {"enable": True, "enable_loggers": []},
-            "property_manager": True,
-            "lock_manager": True,
+            "logging": {"enable": False},
+            "property_manager": None,
+            "lock_manager": None,
             "acceptbasic": True,
             "acceptdigest": False,
             "defaultdigest": False,
-            "trusted_auth_header": False,
         }
         
         try:
@@ -144,11 +143,14 @@ class CMCCCloudWebDAV:
             t = threading.Thread(target=run_dav, daemon=True)
             t.start()
             self.running = True
-            return True
+            return True, "服务已启动"
             
         except Exception as e:
-            print(f"[ERROR] 启动WebDAV失败: {e}")
-            return False
+            err_msg = f"启动WebDAV失败: {str(e)}"
+            print(f"[ERROR] {err_msg}")
+            import traceback
+            traceback.print_exc()
+            return False, err_msg
             
     def _stop_webdav(self):
         """停止WebDAV服务"""
@@ -181,16 +183,16 @@ class CMCCCloudWebDAV:
         if action == "start":
             if self.running:
                 return {"success": True, "message": "服务已在运行"}
-            success = self._start_webdav()
-            return {"success": success, "message": "服务已启动" if success else "启动失败"}
+            success, msg = self._start_webdav()
+            return {"success": success, "message": msg}
         elif action == "stop":
             self._stop_webdav()
             return {"success": True, "message": "服务已停止"}
         elif action == "restart":
             self._stop_webdav()
             time.sleep(1)
-            success = self._start_webdav()
-            return {"success": success, "message": "服务已重启" if success else "重启失败"}
+            success, msg = self._start_webdav()
+            return {"success": success, "message": msg}
         return {"success": False, "message": "未知命令"}
         
     def start(self):
@@ -208,9 +210,12 @@ class CMCCCloudWebDAV:
         auth = self.config.get("auth", {})
         if (auth.get("cookie") or (auth.get("phone") and auth.get("auth_token"))) \
            and self.config.get("auto_start", False):
-            self._start_webdav()
-            webdav_cfg = self.config.get("webdav", {})
-            print(f"[INFO] WebDAV地址: http://{webdav_cfg.get('host','0.0.0.0')}:{webdav_cfg.get('port',8081)}")
+            success, msg = self._start_webdav()
+            if success:
+                webdav_cfg = self.config.get("webdav", {})
+                print(f"[INFO] WebDAV地址: http://{webdav_cfg.get('host','0.0.0.0')}:{webdav_cfg.get('port',8081)}")
+            else:
+                print(f"[WARN] 自动启动WebDAV失败: {msg}")
         else:
             print("[INFO] 请在管理界面配置认证信息后启动WebDAV服务")
             
