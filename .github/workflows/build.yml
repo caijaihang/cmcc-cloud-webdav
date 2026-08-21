@@ -68,11 +68,29 @@ jobs:
           path: dist/*.exe
           retention-days: 30
 
+      # ---------- 新增：生成基于时间戳的版本号 ----------
+      - name: Generate version
+        id: version
+        shell: pwsh
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $build = $env:GITHUB_RUN_NUMBER
+          $ver = "v$date-$build"
+          # 将版本号写入 GITHUB_OUTPUT，供后续步骤引用
+          Write-Output "VERSION=$ver" >> $env:GITHUB_OUTPUT
+          Write-Output "Generated version: $ver"
+
+      # ---------- 可选：列出 dist 目录（调试用） ----------
+      - name: List dist contents
+        run: dir dist
+        shell: cmd
+
+      # ---------- 自动发布 Release ----------
       - name: Auto Release
-        uses: svenstaro/upload-release-action@v2
+        uses: softprops/action-gh-release@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/*.exe
-          tag: v1.0.0-build.${{ github.run_number }}
-          overwrite: true
+          files: dist/*.exe
+          tag_name: ${{ steps.version.outputs.VERSION }}
           body: "Auto build run ${{ github.run_number }} commit ${{ github.sha }}"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          overwrite: true
