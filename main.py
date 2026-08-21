@@ -89,13 +89,13 @@ class CMCCCloudWebDAV:
             print("[ERROR] 未配置认证信息，请在管理界面配置")
             return False
             
-        # 测试连接
-        user_info = self.api.get_user_info()
-        if user_info.get("success"):
+        # 测试连接（用 list_files 代替 get_user_info，因为 hcy/user/get 不存在）
+        result = self.api.list_files()
+        if result.get("success"):
             print("[INFO] 云盘连接成功")
             return True
         else:
-            print(f"[ERROR] 云盘连接失败: {user_info.get('message', '未知错误')}")
+            print(f"[ERROR] 云盘连接失败: {result.get('message', '未知错误')}")
             return False
             
     def _start_webdav(self):

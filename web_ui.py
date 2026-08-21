@@ -121,6 +121,10 @@ class WebUIManager:
             return self._api_status(environ, start_response)
         elif path == "/api/control":
             return self._api_control(environ, start_response)
+        elif path == "/api/set_cookie":
+            return self._api_set_cookie(environ, start_response)
+        elif path == "/api/bookmark":
+            return self._api_bookmark(environ, start_response)
         else:
             start_response("404 Not Found", [("Content-Type", "text/plain")])
             return [b"Not Found"]
@@ -195,6 +199,10 @@ class WebUIManager:
 {message}
 <div class="card">
 <h2>认证配置</h2>
+<div style="background:#f0f5ff;border:1px solid #667eea;border-radius:8px;padding:16px;margin-bottom:16px;">
+<p style="margin:0 0 12px 0;color:#333;"><b>🚀 懒人模式：</b>无需手动复制Cookie，一键自动获取</p>
+<a href="/api/bookmark" class="btn btn-primary" target="_blank">🚀 自动获取 Cookie（书签脚本）</a>
+</div>
 <form method="POST" action="/config">
 <div class="form-group">
 <label>Cookie字符串 (推荐，直接从浏览器复制)</label>
@@ -293,6 +301,58 @@ class WebUIManager:
             result = {"success": True, "message": "日志已清空"}
         start_response("200 OK", [("Content-Type", "application/json")])
         return [json.dumps(result).encode()]
+
+    def _api_set_cookie(self, environ, start_response):
+        """接收浏览器书签脚本发送的Cookie"""
+        result = {"success": False, "message": "请求方式错误"}
+        if environ.get("REQUEST_METHOD") == "POST":
+            try:
+                cl = int(environ.get("CONTENT_LENGTH", 0))
+                body = environ["wsgi.input"].read(cl).decode("utf-8")
+                data = json.loads(body)
+                cookie = data.get("cookie", "")
+                if cookie:
+                    config = self._load_config()
+                    config["auth"]["cookie"] = cookie
+                    self._save_config(config)
+                    result = {"success": True, "message": "Cookie已自动保存"}
+                    self.add_log("info", "通过书签脚本自动获取Cookie成功")
+                else:
+                    result = {"success": False, "message": "Cookie为空"}
+            except Exception as e:
+                result = {"success": False, "message": str(e)}
+        start_response("200 OK", [("Content-Type", "application/json")])
+        return [json.dumps(result).encode()]
+
+    def _api_bookmark(self, environ, start_response):
+        """返回书签脚本获取页面"""
+        port = self.port
+        script = f"""javascript:(function(){{var c=document.cookie;if(!c){{alert('当前页面没有Cookie，请先登录yun.139.com');return;}}fetch('http://127.0.0.1:{port}/api/set_cookie',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{cookie:c}})}}).then(r=>r.json()).then(d=>{{if(d.success){{alert('Cookie自动获取成功！请返回管理界面点击启动服务。');}}else{{alert('失败:'+d.message);}}}}).catch(e=>{{alert('发送失败，请检查本地服务是否运行:'+e);}});}})();"""
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>自动获取Cookie</title>
+<style>body{{font-family:sans-serif;max-width:800px;margin:40px auto;padding:20px;background:#f0f2f5;}}
+.card{{background:white;border-radius:12px;padding:24px;box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:20px;}}
+h1{{color:#667eea;}}.btn{{display:inline-block;padding:12px 24px;background:#667eea;color:white;border-radius:6px;text-decoration:none;cursor:pointer;border:none;font-size:14px;}}
+.code{{background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:8px;font-family:monospace;font-size:12px;word-break:break-all;}}
+.step{{margin:16px 0;padding:16px;background:#f8f9fa;border-radius:8px;border-left:4px solid #667eea;}}
+</style></head><body>
+<div class="card"><h1>🚀 自动获取 Cookie（书签脚本）</h1>
+<p>无需手动复制粘贴，一键自动同步 yun.139.com 的 Cookie。</p></div>
+<div class="card"><h2>使用步骤</h2>
+<div class="step"><b>步骤1：</b> 用 <b>Chrome/Edge</b> 登录 <a href="https://yun.139.com" target="_blank">yun.139.com</a></div>
+<div class="step"><b>步骤2：</b> 把下面的按钮拖到浏览器<b>书签栏</b>（或右键收藏）</div>
+<div style="text-align:center;margin:20px 0;"><a href="{script}" class="btn">📥 获取移动云盘Cookie</a></div>
+<div class="step"><b>步骤3：</b> 保持登录状态，点击刚才保存的书签</div>
+<div class="step"><b>步骤4：</b> 看到 "Cookie自动获取成功" 提示后，返回 <a href="/config">配置管理</a> 点击启动服务</div>
+</div>
+<div class="card"><h2>脚本源码（备用）</h2>
+<p>如果拖拽无效，可以复制下面代码，在 yun.139.com 页面按 F12 → Console 粘贴执行：</p>
+<div class="code">{script.replace('javascript:', '')}</div>
+</div>
+<div style="text-align:center;"><a href="/config" class="btn">返回配置管理</a></div>
+</body></html>"""
+        start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+        return [html.encode("utf-8")]
 
     def _parse_form(self, body):
         result = {}
