@@ -20,18 +20,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Setup Python (Win7 compatible)
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.8"
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r requirements.txt
-
       - name: Build windowed
         run: |
           pyinstaller --name CMCCCloudWebDAV --onefile --windowed `
@@ -47,7 +44,6 @@ jobs:
             --hidden-import PIL.ImageDraw `
             --hidden-import pystray `
             --clean --noconfirm main.py
-
       - name: Build console
         run: |
           pyinstaller --name CMCCCloudWebDAV-console --onefile --console `
@@ -63,15 +59,14 @@ jobs:
             --hidden-import PIL.ImageDraw `
             --hidden-import pystray `
             --clean --noconfirm main.py
-
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CMCCCloudWebDAV-Windows
           path: dist/*.exe
           retention-days: 30
-
-      - name: List dist contents
+      - name: List dist
         run: dir dist
         shell: cmd
 
@@ -82,18 +77,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.8"
-
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r requirements.txt
-
       - name: Build
         run: |
           pyinstaller --name cmcc-webdav --onefile \
@@ -109,8 +101,8 @@ jobs:
             --hidden-import PIL.ImageDraw \
             --hidden-import pystray \
             --clean --noconfirm main.py
-
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cmcc-webdav-linux
@@ -119,23 +111,21 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.8"
-
+          python-version: "3.9"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r requirements.txt
-
       - name: Build
         run: |
           pyinstaller --name cmcc-webdav --onefile \
@@ -151,44 +141,80 @@ jobs:
             --hidden-import PIL.ImageDraw \
             --hidden-import pystray \
             --clean --noconfirm main.py
-
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cmcc-webdav-macos
           path: dist/cmcc-webdav
           retention-days: 30
 
-  release:
-    needs: [build-windows, build-linux, build-macos]
+  build-android:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
-      - name: Download Windows artifact
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Install Buildozer
+        run: |
+          sudo apt update
+          sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          pip install buildozer cython
+      - name: Build APK
+        run: |
+          buildozer android debug
+        env:
+          ANDROIDSDK: /usr/local/lib/android/sdk
+          ANDROIDNDK: /usr/local/lib/android/sdk/ndk/25.2.9519653
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmcc-webdav-android
+          path: bin/*.apk
+          retention-days: 30
+
+  release:
+    needs: [build-windows, build-linux, build-macos, build-android]
+    runs-on: ubuntu-latest
+    if: always() && (needs.build-windows.result == 'success' || needs.build-linux.result == 'success' || needs.build-macos.result == 'success' || needs.build-android.result == 'success')
+    steps:
+      - name: Download Windows
+        if: needs.build-windows.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: CMCCCloudWebDAV-Windows
           path: ./dist/windows
-
-      - name: Download Linux artifact
+      - name: Download Linux
+        if: needs.build-linux.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: cmcc-webdav-linux
           path: ./dist/linux
-
-      - name: Download macOS artifact
+      - name: Download macOS
+        if: needs.build-macos.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: cmcc-webdav-macos
           path: ./dist/macos
-
+      - name: Download Android
+        if: needs.build-android.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: cmcc-webdav-android
+          path: ./dist/android
       - name: Generate version
         id: version
         run: |
           DATE=$(date +%Y.%m.%d)
           BUILD=${{ github.run_number }}
           echo "VERSION=v${DATE}-${BUILD}" >> $GITHUB_OUTPUT
-          echo "Generated version: v${DATE}-${BUILD}"
-
       - name: Auto Release
         uses: softprops/action-gh-release@v2
         with:
@@ -196,16 +222,15 @@ jobs:
             ./dist/windows/*.exe
             ./dist/linux/cmcc-webdav
             ./dist/macos/cmcc-webdav
+            ./dist/android/*.apk
           tag_name: ${{ steps.version.outputs.VERSION }}
           body: |
             Auto build run **#${{ github.run_number }}**
             Commit: `${{ github.sha }}`
-            Branch: `${{ github.ref_name }}`
-
-            ### 下载说明
-            - `CMCCCloudWebDAV.exe` — Windows 窗口版（双击运行，无控制台）
-            - `CMCCCloudWebDAV-console.exe` — Windows 控制台版（带调试输出）
-            - `cmcc-webdav` (Linux) — Linux 单文件可执行程序
-            - `cmcc-webdav` (macOS) — macOS 单文件可执行程序
+            - `CMCCCloudWebDAV.exe` — Windows 窗口版
+            - `CMCCCloudWebDAV-console.exe` — Windows 控制台版
+            - `cmcc-webdav` — Linux
+            - `cmcc-webdav` — macOS
+            - `*.apk` — Android
           token: ${{ secrets.GITHUB_TOKEN }}
           overwrite: true
