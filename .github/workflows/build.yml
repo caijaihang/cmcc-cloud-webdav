@@ -156,7 +156,7 @@ jobs:
             --collect-data PIL \
             --collect-data pystray \
             --collect-data certifi \
-            --add-binary win_dlls;. \
+            --add-binary="win_dlls;." \
             --win-private-assemblies \
             --noupx \
             --clean --noconfirm main.py
@@ -221,7 +221,7 @@ jobs:
             --collect-data PIL \
             --collect-data pystray \
             --collect-data certifi \
-            --add-binary win_dlls;. \
+            --add-binary="win_dlls;." \
             --win-private-assemblies \
             --noupx \
             --clean --noconfirm main.py
