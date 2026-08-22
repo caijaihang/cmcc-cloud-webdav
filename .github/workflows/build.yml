@@ -4,26 +4,54 @@ on:
   push:
     branches: [main, master]
     tags: ["v*"]
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (如 v1.0.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.version.outputs.TAG_NAME }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Generate version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "TAG_NAME=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            DATE=$(date +%Y.%m.%d)
+            BUILD=${{ github.run_number }}
+            echo "TAG_NAME=v${DATE}-${BUILD}" >> $GITHUB_OUTPUT
+          fi
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
         with:
-          python-version: "3.8"
+          tag_name: ${{ steps.version.outputs.TAG_NAME }}
+          name: Release ${{ steps.version.outputs.TAG_NAME }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -59,28 +87,21 @@ jobs:
             --hidden-import PIL.ImageDraw `
             --hidden-import pystray `
             --clean --noconfirm main.py
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: CMCCCloudWebDAV-Windows
-          path: dist/*.exe
-          retention-days: 30
-      - name: List dist
-        run: dir dist
-        shell: cmd
+      - name: Upload to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.create-release.outputs.tag_name }} dist/CMCCCloudWebDAV.exe --clobber
+          gh release upload ${{ needs.create-release.outputs.tag_name }} dist/CMCCCloudWebDAV-console.exe --clobber
 
   build-linux:
+    needs: create-release
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.8"
+          python-version: "3.11"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -101,26 +122,21 @@ jobs:
             --hidden-import PIL.ImageDraw \
             --hidden-import pystray \
             --clean --noconfirm main.py
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cmcc-webdav-linux
-          path: dist/cmcc-webdav
-          retention-days: 30
+      - name: Upload to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.create-release.outputs.tag_name }} dist/cmcc-webdav --clobber
 
   build-macos:
+    needs: create-release
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.9"
+          python-version: "3.11"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
@@ -141,96 +157,42 @@ jobs:
             --hidden-import PIL.ImageDraw \
             --hidden-import pystray \
             --clean --noconfirm main.py
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cmcc-webdav-macos
-          path: dist/cmcc-webdav
-          retention-days: 30
+      - name: Upload to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.create-release.outputs.tag_name }} dist/cmcc-webdav --clobber
 
   build-android:
+    needs: create-release
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
-      - name: Install Buildozer
+      - name: Install system deps
         run: |
           sudo apt update
           sudo apt install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo6 cmake libffi-dev libssl-dev
-          pip install buildozer cython
+      - name: Setup Android SDK
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
+          mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+          cd $ANDROID_SDK_ROOT/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q commandlinetools-linux-11076708_latest.zip
+          mv cmdline-tools latest
+          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+          yes | sdkmanager --licenses || true
+          sdkmanager "build-tools;34.0.0" "platforms;android-34" "platform-tools" || true
+      - name: Install Buildozer
+        run: pip install buildozer cython
       - name: Build APK
-        run: |
-          buildozer android debug
+        run: buildozer android debug
+      - name: Upload to Release
         env:
-          ANDROIDSDK: /usr/local/lib/android/sdk
-          ANDROIDNDK: /usr/local/lib/android/sdk/ndk/25.2.9519653
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cmcc-webdav-android
-          path: bin/*.apk
-          retention-days: 30
-
-  release:
-    needs: [build-windows, build-linux, build-macos, build-android]
-    runs-on: ubuntu-latest
-    if: always() && (needs.build-windows.result == 'success' || needs.build-linux.result == 'success' || needs.build-macos.result == 'success' || needs.build-android.result == 'success')
-    steps:
-      - name: Download Windows
-        if: needs.build-windows.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: CMCCCloudWebDAV-Windows
-          path: ./dist/windows
-      - name: Download Linux
-        if: needs.build-linux.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: cmcc-webdav-linux
-          path: ./dist/linux
-      - name: Download macOS
-        if: needs.build-macos.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: cmcc-webdav-macos
-          path: ./dist/macos
-      - name: Download Android
-        if: needs.build-android.result == 'success'
-        uses: actions/download-artifact@v4
-        with:
-          name: cmcc-webdav-android
-          path: ./dist/android
-      - name: Generate version
-        id: version
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DATE=$(date +%Y.%m.%d)
-          BUILD=${{ github.run_number }}
-          echo "VERSION=v${DATE}-${BUILD}" >> $GITHUB_OUTPUT
-      - name: Auto Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ./dist/windows/*.exe
-            ./dist/linux/cmcc-webdav
-            ./dist/macos/cmcc-webdav
-            ./dist/android/*.apk
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          body: |
-            Auto build run **#${{ github.run_number }}**
-            Commit: `${{ github.sha }}`
-            - `CMCCCloudWebDAV.exe` — Windows 窗口版
-            - `CMCCCloudWebDAV-console.exe` — Windows 控制台版
-            - `cmcc-webdav` — Linux
-            - `cmcc-webdav` — macOS
-            - `*.apk` — Android
-          token: ${{ secrets.GITHUB_TOKEN }}
-          overwrite: true
+          gh release upload ${{ needs.create-release.outputs.tag_name }} bin/*.apk --clobber
