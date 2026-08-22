@@ -46,165 +46,187 @@ jobs:
 
   build-windows:
     needs: create-release
-    runs-on: windows-2019
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.8"
-      - name: Install VC++ Redistributable
+      - name: Install Wine 8.x
         run: |
-          choco install vcredist140 -y
-          choco install vcredist2015 -y
-      - name: Install deps
+          sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          sudo wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+          sudo wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/noble/winehq-noble.sources
+          sudo apt update
+          sudo apt install -y --install-recommends winehq-stable winetricks xvfb
+          wine --version
+      - name: Init Wine prefix
         run: |
-          python -m pip install --upgrade pip
-          pip install pyinstaller pyinstaller-hooks-contrib
-          pip install -r requirements.txt
+          export WINEPREFIX=$HOME/.wine
+          export WINEARCH=win64
+          wineboot --init
+          xvfb-run -a winetricks -q vcrun2019 corefonts
+      - name: Download Embeddable Python 3.8
+        run: |
+          mkdir -p $HOME/embed-python
+          cd $HOME/embed-python
+          wget -q https://www.python.org/ftp/python/3.8.10/python-3.8.10-embed-amd64.zip
+          unzip -q python-3.8.10-embed-amd64.zip
+          sed -i 's/#import site/import site/' python38._pth
+          echo 'Lib/site-packages' >> python38._pth
+      - name: Install pip and deps
+        run: |
+          export WINEPREFIX=$HOME/.wine
+          cd $HOME/embed-python
+          wget -q https://bootstrap.pypa.io/get-pip.py
+          wine python.exe get-pip.py
+          wine python.exe -m pip install --upgrade pip
+          wine python.exe -m pip install pyinstaller pyinstaller-hooks-contrib
+          wine python.exe -m pip install -r $GITHUB_WORKSPACE/requirements.txt
       - name: Collect Windows DLLs
         run: |
-          $dllDir = "win_dlls"
-          New-Item -ItemType Directory -Force -Path $dllDir
-          $sysPaths = @("C:\Windows\System32", "C:\Windows\SysWOW64")
-          $dlls = @("api-ms-win-core-path-l1-1-0.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "api-ms-win-crt-stdio-l1-1-0.dll", "api-ms-win-crt-heap-l1-1-0.dll", "api-ms-win-crt-string-l1-1-0.dll", "api-ms-win-crt-convert-l1-1-0.dll", "api-ms-win-crt-environment-l1-1-0.dll", "api-ms-win-crt-time-l1-1-0.dll", "api-ms-win-crt-utility-l1-1-0.dll", "api-ms-win-crt-math-l1-1-0.dll", "api-ms-win-crt-locale-l1-1-0.dll", "api-ms-win-crt-filesystem-l1-1-0.dll", "api-ms-win-crt-process-l1-1-0.dll", "api-ms-win-crt-conio-l1-1-0.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "ucrtbase.dll")
-          foreach ($dll in $dlls) {
-            foreach ($path in $sysPaths) {
-              $fp = Join-Path $path $dll
-              if (Test-Path $fp) {
-                Copy-Item $fp $dllDir -Force
-                Write-Host "Copied $dll from $path"
+          mkdir -p $GITHUB_WORKSPACE/win_dlls
+          cd $GITHUB_WORKSPACE/win_dlls
+          for dll in api-ms-win-core-path-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-locale-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-process-l1-1-0.dll api-ms-win-crt-conio-l1-1-0.dll vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll ucrtbase.dll; do
+            for p in /usr/lib/x86_64-linux-gnu/wine/x86_64-windows /usr/lib/wine/x86_64-windows /usr/share/wine/windows; do
+              if [ -f "$p/$dll" ]; then
+                cp "$p/$dll" .
+                echo "Copied $dll from $p"
                 break
-              }
-            }
-          }
-        shell: pwsh
+              fi
+            done
+          done
+          ls -la
       - name: Build windowed
+        env:
+          WINEPREFIX: ${{ github.workspace }}/.wine
         run: |
-          pyinstaller --name CMCCCloudWebDAV --onefile --windowed `
-            --hidden-import cheroot.wsgi `
-            --hidden-import wsgidav.wsgidav_app `
-            --hidden-import wsgidav.dav_provider `
-            --hidden-import wsgidav.dir_browser `
-            --hidden-import wsgidav.property_manager `
-            --hidden-import wsgidav.lock_manager `
-            --hidden-import requests `
-            --hidden-import PIL `
-            --hidden-import PIL.Image `
-            --hidden-import PIL.ImageDraw `
-            --hidden-import pystray `
-            --hidden-import ctypes `
-            --hidden-import ctypes.wintypes `
-            --hidden-import socket `
-            --hidden-import ssl `
-            --hidden-import urllib3 `
-            --hidden-import charset_normalizer `
-            --hidden-import certifi `
-            --hidden-import idna `
-            --hidden-import json `
-            --hidden-import logging `
-            --hidden-import hashlib `
-            --hidden-import threading `
-            --hidden-import tempfile `
-            --hidden-import mimetypes `
-            --hidden-import datetime `
-            --hidden-import io `
-            --hidden-import os `
-            --hidden-import sys `
-            --hidden-import time `
-            --hidden-import base64 `
-            --hidden-import random `
-            --hidden-import string `
-            --hidden-import webbrowser `
-            --hidden-import subprocess `
-            --hidden-import argparse `
-            --hidden-import configparser `
-            --hidden-import pathlib `
-            --hidden-import cryptography `
-            --hidden-import cryptography.hazmat.primitives.ciphers.aead `
-            --collect-all PIL `
-            --collect-all pystray `
-            --collect-all requests `
-            --collect-all cheroot `
-            --collect-all wsgidav `
-            --collect-all cryptography `
-            --collect-all urllib3 `
-            --collect-all charset_normalizer `
-            --collect-all certifi `
-            --collect-all idna `
-            --collect-binaries PIL `
-            --collect-binaries pystray `
-            --collect-data PIL `
-            --collect-data pystray `
-            --collect-data certifi `
-            --add-binary win_dlls;. `
-            --win-private-assemblies `
-            --noupx `
+          cd $GITHUB_WORKSPACE
+          wine $HOME/embed-python/python.exe -m PyInstaller --name CMCCCloudWebDAV --onefile --windowed \
+            --hidden-import cheroot.wsgi \
+            --hidden-import wsgidav.wsgidav_app \
+            --hidden-import wsgidav.dav_provider \
+            --hidden-import wsgidav.dir_browser \
+            --hidden-import wsgidav.property_manager \
+            --hidden-import wsgidav.lock_manager \
+            --hidden-import requests \
+            --hidden-import PIL \
+            --hidden-import PIL.Image \
+            --hidden-import PIL.ImageDraw \
+            --hidden-import pystray \
+            --hidden-import ctypes \
+            --hidden-import ctypes.wintypes \
+            --hidden-import socket \
+            --hidden-import ssl \
+            --hidden-import urllib3 \
+            --hidden-import charset_normalizer \
+            --hidden-import certifi \
+            --hidden-import idna \
+            --hidden-import json \
+            --hidden-import logging \
+            --hidden-import hashlib \
+            --hidden-import threading \
+            --hidden-import tempfile \
+            --hidden-import mimetypes \
+            --hidden-import datetime \
+            --hidden-import io \
+            --hidden-import os \
+            --hidden-import sys \
+            --hidden-import time \
+            --hidden-import base64 \
+            --hidden-import random \
+            --hidden-import string \
+            --hidden-import webbrowser \
+            --hidden-import subprocess \
+            --hidden-import argparse \
+            --hidden-import configparser \
+            --hidden-import pathlib \
+            --hidden-import cryptography \
+            --hidden-import cryptography.hazmat.primitives.ciphers.aead \
+            --collect-all PIL \
+            --collect-all pystray \
+            --collect-all requests \
+            --collect-all cheroot \
+            --collect-all wsgidav \
+            --collect-all cryptography \
+            --collect-all urllib3 \
+            --collect-all charset_normalizer \
+            --collect-all certifi \
+            --collect-all idna \
+            --collect-binaries PIL \
+            --collect-binaries pystray \
+            --collect-data PIL \
+            --collect-data pystray \
+            --collect-data certifi \
+            --add-binary win_dlls;. \
+            --win-private-assemblies \
+            --noupx \
             --clean --noconfirm main.py
       - name: Build console
+        env:
+          WINEPREFIX: ${{ github.workspace }}/.wine
         run: |
-          pyinstaller --name CMCCCloudWebDAV-console --onefile --console `
-            --hidden-import cheroot.wsgi `
-            --hidden-import wsgidav.wsgidav_app `
-            --hidden-import wsgidav.dav_provider `
-            --hidden-import wsgidav.dir_browser `
-            --hidden-import wsgidav.property_manager `
-            --hidden-import wsgidav.lock_manager `
-            --hidden-import requests `
-            --hidden-import PIL `
-            --hidden-import PIL.Image `
-            --hidden-import PIL.ImageDraw `
-            --hidden-import pystray `
-            --hidden-import ctypes `
-            --hidden-import ctypes.wintypes `
-            --hidden-import socket `
-            --hidden-import ssl `
-            --hidden-import urllib3 `
-            --hidden-import charset_normalizer `
-            --hidden-import certifi `
-            --hidden-import idna `
-            --hidden-import json `
-            --hidden-import logging `
-            --hidden-import hashlib `
-            --hidden-import threading `
-            --hidden-import tempfile `
-            --hidden-import mimetypes `
-            --hidden-import datetime `
-            --hidden-import io `
-            --hidden-import os `
-            --hidden-import sys `
-            --hidden-import time `
-            --hidden-import base64 `
-            --hidden-import random `
-            --hidden-import string `
-            --hidden-import webbrowser `
-            --hidden-import subprocess `
-            --hidden-import argparse `
-            --hidden-import configparser `
-            --hidden-import pathlib `
-            --hidden-import cryptography `
-            --hidden-import cryptography.hazmat.primitives.ciphers.aead `
-            --collect-all PIL `
-            --collect-all pystray `
-            --collect-all requests `
-            --collect-all cheroot `
-            --collect-all wsgidav `
-            --collect-all cryptography `
-            --collect-all urllib3 `
-            --collect-all charset_normalizer `
-            --collect-all certifi `
-            --collect-all idna `
-            --collect-binaries PIL `
-            --collect-binaries pystray `
-            --collect-data PIL `
-            --collect-data pystray `
-            --collect-data certifi `
-            --add-binary win_dlls;. `
-            --win-private-assemblies `
-            --noupx `
+          cd $GITHUB_WORKSPACE
+          wine $HOME/embed-python/python.exe -m PyInstaller --name CMCCCloudWebDAV-console --onefile --console \
+            --hidden-import cheroot.wsgi \
+            --hidden-import wsgidav.wsgidav_app \
+            --hidden-import wsgidav.dav_provider \
+            --hidden-import wsgidav.dir_browser \
+            --hidden-import wsgidav.property_manager \
+            --hidden-import wsgidav.lock_manager \
+            --hidden-import requests \
+            --hidden-import PIL \
+            --hidden-import PIL.Image \
+            --hidden-import PIL.ImageDraw \
+            --hidden-import pystray \
+            --hidden-import ctypes \
+            --hidden-import ctypes.wintypes \
+            --hidden-import socket \
+            --hidden-import ssl \
+            --hidden-import urllib3 \
+            --hidden-import charset_normalizer \
+            --hidden-import certifi \
+            --hidden-import idna \
+            --hidden-import json \
+            --hidden-import logging \
+            --hidden-import hashlib \
+            --hidden-import threading \
+            --hidden-import tempfile \
+            --hidden-import mimetypes \
+            --hidden-import datetime \
+            --hidden-import io \
+            --hidden-import os \
+            --hidden-import sys \
+            --hidden-import time \
+            --hidden-import base64 \
+            --hidden-import random \
+            --hidden-import string \
+            --hidden-import webbrowser \
+            --hidden-import subprocess \
+            --hidden-import argparse \
+            --hidden-import configparser \
+            --hidden-import pathlib \
+            --hidden-import cryptography \
+            --hidden-import cryptography.hazmat.primitives.ciphers.aead \
+            --collect-all PIL \
+            --collect-all pystray \
+            --collect-all requests \
+            --collect-all cheroot \
+            --collect-all wsgidav \
+            --collect-all cryptography \
+            --collect-all urllib3 \
+            --collect-all charset_normalizer \
+            --collect-all certifi \
+            --collect-all idna \
+            --collect-binaries PIL \
+            --collect-binaries pystray \
+            --collect-data PIL \
+            --collect-data pystray \
+            --collect-data certifi \
+            --add-binary win_dlls;. \
+            --win-private-assemblies \
+            --noupx \
             --clean --noconfirm main.py
       - name: Check dist
-        run: dir dist
-        shell: cmd
+        run: ls -la dist/
       - name: Upload to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -332,11 +354,16 @@ jobs:
           export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
           yes | sdkmanager --licenses || true
           sdkmanager "build-tools;34.0.0" "platforms;android-34" "platform-tools" "ndk;25.2.9519653" || true
+          # Fix buildozer sdkmanager path: create symlink in old location
+          mkdir -p $ANDROID_SDK_ROOT/tools/bin
+          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager $ANDROID_SDK_ROOT/tools/bin/sdkmanager
+          ln -sf $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager $ANDROID_SDK_ROOT/tools/bin/avdmanager
           echo "ANDROIDSDK=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_NDK=$BUILDOZER_DIR/android-ndk-r25b" >> $GITHUB_ENV
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/tools/bin" >> $GITHUB_PATH
       - name: Install Buildozer
         run: |
           pip install buildozer cython
@@ -346,7 +373,7 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_NDK: ${{ env.ANDROID_NDK }}
         run: |
-          export PATH=$ANDROIDSDK/cmdline-tools/latest/bin:$ANDROIDSDK/platform-tools:$PATH
+          export PATH=$ANDROIDSDK/cmdline-tools/latest/bin:$ANDROIDSDK/platform-tools:$ANDROIDSDK/tools/bin:$PATH
           buildozer android debug
       - name: Upload to Release
         env:
