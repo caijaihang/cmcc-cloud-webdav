@@ -353,5 +353,207 @@ class CMCCCloudAPI:
         fid, info = self.resolve_path(path)
         return info.get("fileType")==2 if info else False
 
+    def batch_move(self, file_ids, dest_parent_id):
+        r = self._request("POST", f"{BASE_URL}/hcy/file/batchMove", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"destParentFileId":dest_parent_id})
+        if r.get("success"): self._invalidate_cache()
+        return r
+    def batch_copy(self, file_ids, dest_parent_id):
+        r = self._request("POST", f"{BASE_URL}/hcy/file/batchCopy", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"destParentFileId":dest_parent_id})
+        if r.get("success"): self._invalidate_cache(dest_parent_id)
+        return r
+    def duplicate_file(self, file_id, dest_parent_id=None):
+        return self.copy_file(file_id, dest_parent_id or ROOT_FOLDER_ID)
+    def get_file_detail(self, file_id): return self.get_file(file_id)
+    def get_folder_info(self, folder_id): return self.get_file(folder_id)
+    def list_folder_tree(self, folder_id=None, depth=0, max_depth=5):
+        if depth > max_depth: return []
+        result = []
+        for f in self.list_all_files(folder_id):
+            result.append(f)
+            if f.get("fileType") == 2:
+                result.extend(self.list_folder_tree(f.get("fileId"), depth+1, max_depth))
+        return result
+    def get_path_by_id(self, file_id):
+        if file_id == ROOT_FOLDER_ID: return "/"
+        fi = self.get_file(file_id)
+        if not fi.get("success"): return None
+        fd = fi.get("data",{})
+        fn, pid = fd.get("fileName",""), fd.get("parentFileId")
+        if pid == ROOT_FOLDER_ID or not pid: return "/" + fn
+        pp = self.get_path_by_id(pid)
+        return None if pp is None else pp + "/" + fn
+    def get_file_by_path(self, path):
+        fid, info = self.resolve_path(path)
+        return info
+    def create_file(self, file_name, parent_file_id=None, content=b""):
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(content)
+            tp = f.name
+        try:
+            return self.upload_file(tp, parent_file_id, file_name)
+        finally:
+            os.unlink(tp)
+    def upload_folder(self, local_path, parent_file_id=None, progress_callback=None):
+        if not os.path.isdir(local_path): return {"success":False,"message":"不是文件夹"}
+        parent_id = parent_file_id or ROOT_FOLDER_ID
+        folder_name = os.path.basename(local_path)
+        r = self.create_folder(folder_name, parent_id)
+        if not r.get("success"): return r
+        folder_id = r.get("data",{}).get("fileId") or r.get("data",{}).get("catalogID")
+        uploaded, total = 0, sum(len(files) for _,_,files in os.walk(local_path))
+        for root, dirs, files in os.walk(local_path):
+            rel = os.path.relpath(root, local_path)
+            if rel == ".": cur_id = folder_id
+            else:
+                parts = rel.split(os.sep)
+                cur_id = folder_id
+                for p in parts:
+                    found = False
+                    for c in self.list_all_files(cur_id, use_cache=False):
+                        if c.get("fileName") == p and c.get("fileType") == 2:
+                            cur_id = c.get("fileId"); found = True; break
+                    if not found:
+                        nr = self.create_folder(p, cur_id)
+                        if nr.get("success"): cur_id = nr.get("data",{}).get("fileId") or nr.get("data",{}).get("catalogID")
+                        else: continue
+            for file in files:
+                fp = os.path.join(root, file)
+                self.upload_file(fp, cur_id, file)
+                uploaded += 1
+                if progress_callback: progress_callback(int(uploaded/total*100), uploaded, total)
+        return {"success":True,"message":"上传完成","folderId":folder_id}
+    def download_folder(self, folder_id, local_path, progress_callback=None):
+        if not os.path.exists(local_path): os.makedirs(local_path, exist_ok=True)
+        fi = self.get_file(folder_id)
+        if fi.get("success"):
+            fn = fi.get("data",{}).get("fileName","download")
+            lp = os.path.join(local_path, fn)
+            os.makedirs(lp, exist_ok=True)
+        else: lp = local_path
+        items = self.list_all_files(folder_id, use_cache=False)
+        downloaded, total = 0, len(items)
+        for item in items:
+            name = item.get("fileName","")
+            if item.get("fileType") == 2:
+                self.download_folder(item.get("fileId"), lp, None)
+            else:
+                data = self.download_file(item.get("fileId"))
+                if data:
+                    with open(os.path.join(lp, name), "wb") as f: f.write(data)
+            downloaded += 1
+            if progress_callback: progress_callback(int(downloaded/total*100), downloaded, total)
+        return {"success":True,"message":"下载完成"}
+    def sync_folder(self, local_path, remote_folder_id=None, direction="both", progress_callback=None):
+        remote_folder_id = remote_folder_id or ROOT_FOLDER_ID
+        if direction in ("up","both"):
+            self.upload_folder(local_path, remote_folder_id, progress_callback)
+        if direction in ("down","both"):
+            self.download_folder(remote_folder_id, local_path, progress_callback)
+        return {"success":True,"message":"同步完成"}
+    def get_upload_status(self, upload_id): return self._request("POST", f"{BASE_URL}/hcy/file/uploadStatus", {"uploadId":upload_id})
+    def get_download_status(self, download_id): return self._request("POST", f"{BASE_URL}/hcy/file/downloadStatus", {"downloadId":download_id})
+    def pause_upload(self, upload_id): return self._request("POST", f"{BASE_URL}/hcy/file/pauseUpload", {"uploadId":upload_id})
+    def resume_upload(self, upload_id): return self._request("POST", f"{BASE_URL}/hcy/file/resumeUpload", {"uploadId":upload_id})
+    def get_share_qrcode(self, share_id): return self._request("POST", f"{BASE_URL}/hcy/share/qrcode", {"shareId":share_id})
+    def extend_share(self, share_id, expire_days=7): return self._request("POST", f"{BASE_URL}/hcy/share/extend", {"shareId":share_id,"expireDays":expire_days})
+    def get_share_statistics(self, share_id): return self._request("POST", f"{BASE_URL}/hcy/share/statistics", {"shareId":share_id})
+    def get_activities(self, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/activity/list", {"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def get_notifications(self, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/notification/list", {"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def mark_notification_read(self, notification_ids): return self._request("POST", f"{BASE_URL}/hcy/notification/read", {"notificationIds":notification_ids if isinstance(notification_ids,list) else [notification_ids]})
+    def get_security_log(self, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/security/log", {"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def get_login_devices(self): return self._request("POST", f"{BASE_URL}/hcy/security/devices", {})
+    def logout_device(self, device_id): return self._request("POST", f"{BASE_URL}/hcy/security/logoutDevice", {"deviceId":device_id})
+    def get_vip_info(self): return self._request("POST", f"{BASE_URL}/hcy/vip/info", {})
+    def get_vip_privileges(self): return self._request("POST", f"{BASE_URL}/hcy/vip/privileges", {})
+    def get_coupons(self): return self._request("POST", f"{BASE_URL}/hcy/vip/coupons", {})
+    def get_family_members(self): return self._request("POST", f"{BASE_URL}/hcy/family/members", {})
+    def get_family_folders(self): return self._request("POST", f"{BASE_URL}/hcy/family/folders", {})
+    def create_family_folder(self, folder_name): return self._request("POST", f"{BASE_URL}/hcy/family/createFolder", {"folderName":folder_name})
+    def get_albums(self, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/album/list", {"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def create_album(self, album_name): return self._request("POST", f"{BASE_URL}/hcy/album/create", {"albumName":album_name})
+    def add_to_album(self, album_id, file_ids): return self._request("POST", f"{BASE_URL}/hcy/album/add", {"albumId":album_id,"fileIds":file_ids if isinstance(file_ids,list) else [file_ids]})
+    def get_tags(self): return self._request("POST", f"{BASE_URL}/hcy/tag/list", {})
+    def add_tag(self, file_ids, tag_name): return self._request("POST", f"{BASE_URL}/hcy/tag/add", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"tagName":tag_name})
+    def remove_tag(self, file_ids, tag_name): return self._request("POST", f"{BASE_URL}/hcy/tag/remove", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"tagName":tag_name})
+    def get_duplicates(self, folder_id=None): return self._request("POST", f"{BASE_URL}/hcy/file/duplicates", {"folderId":folder_id or ROOT_FOLDER_ID})
+    def get_large_files(self, min_size=100*1024*1024, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/file/largeFiles", {"minSize":min_size,"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def get_empty_folders(self, folder_id=None): return self._request("POST", f"{BASE_URL}/hcy/folder/empty", {"folderId":folder_id or ROOT_FOLDER_ID})
+    def sort_files(self, folder_id, order_by="updated_at", order_direction="DESC"): return self._request("POST", f"{BASE_URL}/hcy/file/sort", {"folderId":folder_id or ROOT_FOLDER_ID,"orderBy":order_by,"orderDirection":order_direction})
+    def get_file_virus_scan(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/virusScan", {"fileId":file_id})
+    def get_file_watermark(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/watermark", {"fileId":file_id})
+    def set_file_description(self, file_id, description): return self._request("POST", f"{BASE_URL}/hcy/file/setDescription", {"fileId":file_id,"description":description})
+    def get_file_description(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/getDescription", {"fileId":file_id})
+    def get_file_metadata(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/metadata", {"fileId":file_id})
+    def set_file_metadata(self, file_id, metadata): return self._request("POST", f"{BASE_URL}/hcy/file/setMetadata", {"fileId":file_id,"metadata":metadata})
+    def compress_files(self, file_ids, archive_name="archive.zip"): return self._request("POST", f"{BASE_URL}/hcy/file/compress", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"archiveName":archive_name})
+    def extract_archive(self, file_id, dest_folder_id=None): return self._request("POST", f"{BASE_URL}/hcy/file/extract", {"fileId":file_id,"destFolderId":dest_folder_id or ROOT_FOLDER_ID})
+    def convert_document(self, file_id, target_format="pdf"): return self._request("POST", f"{BASE_URL}/hcy/file/convert", {"fileId":file_id,"targetFormat":target_format})
+    def ocr_image(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/ocr", {"fileId":file_id})
+    def get_text_content(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/textContent", {"fileId":file_id})
+    def compare_files(self, file_id1, file_id2): return self._request("POST", f"{BASE_URL}/hcy/file/compare", {"fileId1":file_id1,"fileId2":file_id2})
+    def merge_documents(self, file_ids, output_name="merged.pdf"): return self._request("POST", f"{BASE_URL}/hcy/file/merge", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"outputName":output_name})
+    def split_document(self, file_id, page_ranges): return self._request("POST", f"{BASE_URL}/hcy/file/split", {"fileId":file_id,"pageRanges":page_ranges})
+    def encrypt_file(self, file_id, password): return self._request("POST", f"{BASE_URL}/hcy/file/encrypt", {"fileId":file_id,"password":password})
+    def decrypt_file(self, file_id, password): return self._request("POST", f"{BASE_URL}/hcy/file/decrypt", {"fileId":file_id,"password":password})
+    def get_backup_list(self): return self._request("POST", f"{BASE_URL}/hcy/backup/list", {})
+    def create_backup(self, file_ids, backup_name): return self._request("POST", f"{BASE_URL}/hcy/backup/create", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"backupName":backup_name})
+    def restore_backup(self, backup_id): return self._request("POST", f"{BASE_URL}/hcy/backup/restore", {"backupId":backup_id})
+    def get_sync_folders(self): return self._request("POST", f"{BASE_URL}/hcy/sync/list", {})
+    def add_sync_folder(self, local_path, remote_folder_id): return self._request("POST", f"{BASE_URL}/hcy/sync/add", {"localPath":local_path,"remoteFolderId":remote_folder_id})
+    def remove_sync_folder(self, sync_id): return self._request("POST", f"{BASE_URL}/hcy/sync/remove", {"syncId":sync_id})
+    def get_transfer_tasks(self): return self._request("POST", f"{BASE_URL}/hcy/transfer/list", {})
+    def pause_transfer(self, task_id): return self._request("POST", f"{BASE_URL}/hcy/transfer/pause", {"taskId":task_id})
+    def resume_transfer(self, task_id): return self._request("POST", f"{BASE_URL}/hcy/transfer/resume", {"taskId":task_id})
+    def cancel_transfer(self, task_id): return self._request("POST", f"{BASE_URL}/hcy/transfer/cancel", {"taskId":task_id})
+    def get_bandwidth_limit(self): return self._request("POST", f"{BASE_URL}/hcy/settings/bandwidth", {})
+    def set_bandwidth_limit(self, upload_limit=0, download_limit=0): return self._request("POST", f"{BASE_URL}/hcy/settings/bandwidth", {"uploadLimit":upload_limit,"downloadLimit":download_limit})
+    def get_auto_sync_settings(self): return self._request("POST", f"{BASE_URL}/hcy/settings/autoSync", {})
+    def set_auto_sync_settings(self, enabled=True, interval=3600): return self._request("POST", f"{BASE_URL}/hcy/settings/autoSync", {"enabled":enabled,"interval":interval})
+    def get_trash_settings(self): return self._request("POST", f"{BASE_URL}/hcy/settings/trash", {})
+    def set_trash_settings(self, auto_empty_days=30): return self._request("POST", f"{BASE_URL}/hcy/settings/trash", {"autoEmptyDays":auto_empty_days})
+    def get_privacy_settings(self): return self._request("POST", f"{BASE_URL}/hcy/settings/privacy", {})
+    def set_privacy_settings(self, hide_phone=True, hide_email=True): return self._request("POST", f"{BASE_URL}/hcy/settings/privacy", {"hidePhone":hide_phone,"hideEmail":hide_email})
+    def get_file_access_log(self, file_id, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/file/accessLog", {"fileId":file_id,"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def get_file_collaborators(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/collaborators", {"fileId":file_id})
+    def add_collaborator(self, file_id, account, permission="read"): return self._request("POST", f"{BASE_URL}/hcy/file/addCollaborator", {"fileId":file_id,"account":account,"permission":permission})
+    def remove_collaborator(self, file_id, account): return self._request("POST", f"{BASE_URL}/hcy/file/removeCollaborator", {"fileId":file_id,"account":account})
+    def get_public_links(self, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/publicLink/list", {"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def create_public_link(self, file_ids, expire_days=7): return self._request("POST", f"{BASE_URL}/hcy/publicLink/create", {"fileIds":file_ids if isinstance(file_ids,list) else [file_ids],"expireDays":expire_days})
+    def cancel_public_link(self, link_ids): return self._request("POST", f"{BASE_URL}/hcy/publicLink/cancel", {"linkIds":link_ids if isinstance(link_ids,list) else [link_ids]})
+    def get_file_comments(self, file_id, page_size=100): return self._request("POST", f"{BASE_URL}/hcy/file/comments", {"fileId":file_id,"pageInfo":{"pageSize":page_size,"pageCursor":None}})
+    def add_file_comment(self, file_id, content): return self._request("POST", f"{BASE_URL}/hcy/file/addComment", {"fileId":file_id,"content":content})
+    def delete_file_comment(self, comment_id): return self._request("POST", f"{BASE_URL}/hcy/file/deleteComment", {"commentId":comment_id})
+    def get_file_reactions(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/reactions", {"fileId":file_id})
+    def add_file_reaction(self, file_id, reaction): return self._request("POST", f"{BASE_URL}/hcy/file/addReaction", {"fileId":file_id,"reaction":reaction})
+    def get_file_annotations(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/annotations", {"fileId":file_id})
+    def add_file_annotation(self, file_id, annotation): return self._request("POST", f"{BASE_URL}/hcy/file/addAnnotation", {"fileId":file_id,"annotation":annotation})
+    def get_file_versions_compare(self, file_id, version_id1, version_id2): return self._request("POST", f"{BASE_URL}/hcy/file/compareVersions", {"fileId":file_id,"versionId1":version_id1,"versionId2":version_id2})
+    def get_file_version_download(self, file_id, version_id): return self._request("POST", f"{BASE_URL}/hcy/file/versionDownloadUrl", {"fileId":file_id,"versionId":version_id})
+    def lock_file(self, file_id, duration=3600): return self._request("POST", f"{BASE_URL}/hcy/file/lock", {"fileId":file_id,"duration":duration})
+    def unlock_file(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/unlock", {"fileId":file_id})
+    def get_file_lock_status(self, file_id): return self._request("POST", f"{BASE_URL}/hcy/file/lockStatus", {"fileId":file_id})
+    def get_file_checksum(self, file_id, algorithm="md5"): return self._request("POST", f"{BASE_URL}/hcy/file/checksum", {"fileId":file_id,"algorithm":algorithm})
+    def verify_file_integrity(self, file_id, expected_checksum): return self._request("POST", f"{BASE_URL}/hcy/file/verifyIntegrity", {"fileId":file_id,"expectedChecksum":expected_checksum})
+    def get_storage_analytics(self): return self._request("POST", f"{BASE_URL}/hcy/analytics/storage", {})
+    def get_usage_trends(self, days=30): return self._request("POST", f"{BASE_URL}/hcy/analytics/usageTrends", {"days":days})
+    def get_file_type_distribution(self): return self._request("POST", f"{BASE_URL}/hcy/analytics/fileTypes", {})
+    def get_top_folders(self, limit=10): return self._request("POST", f"{BASE_URL}/hcy/analytics/topFolders", {"limit":limit})
+    def get_recent_activities(self, limit=50): return self._request("POST", f"{BASE_URL}/hcy/analytics/recentActivities", {"limit":limit})
+    def export_file_list(self, folder_id=None, format="csv"): return self._request("POST", f"{BASE_URL}/hcy/file/exportList", {"folderId":folder_id or ROOT_FOLDER_ID,"format":format})
+    def import_file_list(self, file_path, dest_folder_id=None): return self._request("POST", f"{BASE_URL}/hcy/file/importList", {"filePath":file_path,"destFolderId":dest_folder_id or ROOT_FOLDER_ID})
+    def get_quota_warnings(self): return self._request("POST", f"{BASE_URL}/hcy/quota/warnings", {})
+    def get_recommendations(self): return self._request("POST", f"{BASE_URL}/hcy/recommendations", {})
+    def get_tips(self): return self._request("POST", f"{BASE_URL}/hcy/tips", {})
+    def report_issue(self, issue_type, description): return self._request("POST", f"{BASE_URL}/hcy/support/report", {"issueType":issue_type,"description":description})
+    def get_faq(self): return self._request("POST", f"{BASE_URL}/hcy/support/faq", {})
+    def contact_support(self, subject, message): return self._request("POST", f"{BASE_URL}/hcy/support/contact", {"subject":subject,"message":message})
+    def get_system_status(self): return self._request("POST", f"{BASE_URL}/hcy/system/status", {})
+    def get_maintenance_schedule(self): return self._request("POST", f"{BASE_URL}/hcy/system/maintenance", {})
+    def get_api_version(self): return self._request("POST", f"{BASE_URL}/hcy/system/version", {})
+    def get_rate_limits(self): return self._request("POST", f"{BASE_URL}/hcy/system/rateLimits", {})
+    def ping(self): return self._request("POST", f"{BASE_URL}/hcy/system/ping", {})
+    def health_check(self): return self._request("POST", f"{BASE_URL}/hcy/system/health", {})
+
 def create_api_from_cookie(cookie_str): return CMCCCloudAPI(cookie_str=cookie_str)
 def create_api_from_creds(phone, auth_token): return CMCCCloudAPI(phone=phone, auth_token=auth_token)

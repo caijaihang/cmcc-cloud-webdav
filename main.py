@@ -98,7 +98,8 @@ class CMCCCloudWebDAV:
             threading.Thread(target=run_dav, daemon=True).start()
             self.running = True; self._start_heartbeat(); return True, "服务已启动"
         except Exception as e: err = f"启动失败: {e}"; self._log("ERROR", err); import traceback; traceback.print_exc(); return False, err
-    def _stop_webdav(self): self._stop_heartbeat()
+    def _stop_webdav(self):
+        self._stop_heartbeat()
         if self.dav_server:
             try: self.dav_server.stop()
             except: pass
@@ -166,7 +167,7 @@ def main():
     parser.add_argument("--config","-c",default="config.json",help="配置文件路径")
     parser.add_argument("--cookie",help="Cookie字符串")
     parser.add_argument("--phone",help="手机号")
-    parser.add_argument("--auth-token","--token",help="移动云盘Auth Token（从Cookie提取）")
+    parser.add_argument("--auth-token",help="移动云盘Auth Token（从Cookie提取）")
     parser.add_argument("--host",default="0.0.0.0",help="WebDAV监听地址")
     parser.add_argument("--port",type=int,default=8081,help="WebDAV端口")
     parser.add_argument("--ui-port",type=int,default=8080,help="管理界面端口")
