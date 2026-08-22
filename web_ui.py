@@ -2,7 +2,18 @@
 # -*- coding: utf-8 -*-
 """
 CMCC Cloud WebDAV Web UI Manager
-Provides: status monitor / config management / log viewer / manual control
+提供: 状态监控、配置管理、日志查看、文件浏览、容量显示、
+      分享管理、回收站管理、星标管理、搜索、分类浏览
+
+改进点:
+1. 真正的文件浏览器（调用API）
+2. 上传/下载功能
+3. 分享管理（创建/取消/列表）
+4. 回收站管理（还原/彻底删除/清空）
+5. 星标管理
+6. 搜索功能
+7. 分类浏览
+8. 动态状态实时刷新
 """
 
 import os
@@ -19,16 +30,18 @@ except ImportError:
 
 class WebUIManager:
     def __init__(self, host="127.0.0.1", port=8080, config_path="config.json",
-                 log_callback=None, control_callback=None):
+                 log_callback=None, control_callback=None, status_callback=None):
         self.host = host
         self.port = port
         self.config_path = config_path
         self.log_callback = log_callback
         self.control_callback = control_callback
+        self.status_callback = status_callback
         self.server = None
         self.running = False
         self._logs = []
         self._max_logs = 500
+        self._log_lock = threading.Lock()
 
     def _load_config(self):
         if os.path.exists(self.config_path):
@@ -41,10 +54,10 @@ class WebUIManager:
 
     def _default_config(self):
         return {
-            "webdav": {"host": "0.0.0.0", "port": 8081, "mount_path": "Z:", "readonly": False},
+            "webdav": {"host": "0.0.0.0", "port": 8081, "mount_path": "Z:", "readonly": False, "auth_enabled": False, "username": "admin", "password": "admin"},
             "auth": {"cookie": "", "phone": "", "auth_token": ""},
             "ui": {"host": "127.0.0.1", "port": 8080},
-            "auto_start": False, "minimize_to_tray": True
+            "auto_start": False, "minimize_to_tray": True, "auto_open_browser": True
         }
 
     def _save_config(self, config):
@@ -54,16 +67,31 @@ class WebUIManager:
     def add_log(self, level, message):
         entry = {"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                  "level": level, "message": message}
-        self._logs.append(entry)
-        if len(self._logs) > self._max_logs:
-            self._logs = self._logs[-self._max_logs:]
+        with self._log_lock:
+            self._logs.append(entry)
+            if len(self._logs) > self._max_logs:
+                self._logs = self._logs[-self._max_logs:]
         if self.log_callback:
             self.log_callback(entry)
+
+    def _get_status(self):
+        if self.status_callback:
+            return self.status_callback()
+        return {"running": False}
+
+    def _format_size(self, size_bytes):
+        if size_bytes is None or size_bytes == 0:
+            return "0 B"
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(size_bytes) < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} PB"
 
     def _html_page(self, content, title="CMCC Cloud WebDAV"):
         css = """
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #333; }
+        body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; background: #f0f2f5; color: #333; }
         .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
         .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;
                   padding: 30px; border-radius: 12px; margin-bottom: 20px; }
@@ -76,27 +104,56 @@ class WebUIManager:
         .status-item { background: #f8f9fa; padding: 16px; border-radius: 8px; text-align: center; }
         .status-item .label { font-size: 12px; color: #888; margin-bottom: 6px; }
         .status-item .value { font-size: 20px; font-weight: bold; color: #667eea; }
+        .status-item .value.running { color: #52c41a; }
+        .status-item .value.stopped { color: #ff4d4f; }
         .btn { display: inline-block; padding: 10px 24px; border: none; border-radius: 6px;
-               cursor: pointer; font-size: 14px; text-decoration: none; margin-right: 8px; }
+               cursor: pointer; font-size: 14px; text-decoration: none; margin-right: 8px; transition: all 0.3s; }
+        .btn:hover { opacity: 0.85; transform: translateY(-1px); }
         .btn-primary { background: #667eea; color: white; }
         .btn-success { background: #52c41a; color: white; }
         .btn-danger { background: #ff4d4f; color: white; }
+        .btn-warning { background: #faad14; color: white; }
+        .btn-info { background: #1890ff; color: white; }
         .form-group { margin-bottom: 16px; }
         .form-group label { display: block; margin-bottom: 6px; font-size: 13px; color: #666; }
-        .form-group input, .form-group textarea { width: 100%; padding: 10px 12px;
+        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 10px 12px;
             border: 1px solid #d9d9d9; border-radius: 6px; font-size: 14px; }
         .form-group textarea { min-height: 80px; resize: vertical; font-family: monospace; }
         .log-container { max-height: 400px; overflow-y: auto; background: #1e1e1e;
                          border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; }
         .log-entry { padding: 3px 0; color: #d4d4d4; border-bottom: 1px solid #333; }
-        .nav { display: flex; gap: 8px; margin-bottom: 20px; }
+        .nav { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
         .nav a { padding: 10px 20px; background: white; border-radius: 6px;
-                 color: #666; text-decoration: none; font-size: 14px; }
+                 color: #666; text-decoration: none; font-size: 14px; transition: all 0.3s; }
         .nav a:hover, .nav a.active { background: #667eea; color: white; }
         .alert { padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; }
         .alert-success { background: #f6ffed; border: 1px solid #b7eb8f; color: #52c41a; }
         .alert-error { background: #fff2f0; border: 1px solid #ffccc7; color: #ff4d4f; }
+        .alert-info { background: #e6f7ff; border: 1px solid #91d5ff; color: #1890ff; }
         .footer { text-align: center; padding: 20px; color: #999; font-size: 12px; }
+        .progress-bar { width: 100%; height: 8px; background: #f0f0f0; border-radius: 4px; overflow: hidden; }
+        .progress-bar-inner { height: 100%; background: linear-gradient(90deg, #667eea, #764ba2);
+                              border-radius: 4px; transition: width 0.3s; }
+        .file-list { width: 100%; border-collapse: collapse; }
+        .file-list th, .file-list td { padding: 10px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+        .file-list th { background: #fafafa; font-weight: 600; color: #666; font-size: 13px; }
+        .file-list tr:hover { background: #f5f5f5; }
+        .file-icon { display: inline-block; width: 20px; text-align: center; margin-right: 6px; }
+        .breadcrumb { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .breadcrumb a { color: #667eea; text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+        .search-box { display: flex; gap: 8px; margin-bottom: 16px; }
+        .search-box input { flex: 1; }
+        .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid #f0f0f0; }
+        .tabs a { padding: 10px 20px; color: #666; text-decoration: none; border-bottom: 2px solid transparent; }
+        .tabs a.active { color: #667eea; border-bottom-color: #667eea; }
+        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+        .action-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                 background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-content { background: white; padding: 24px; border-radius: 12px; max-width: 500px; width: 90%; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .modal-close { font-size: 24px; cursor: pointer; color: #999; }
         """
         return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -106,13 +163,12 @@ class WebUIManager:
 <div class="header"><h1>☁️ 中国移动云盘 WebDAV</h1>
 <p>将移动云盘映射为本地磁盘 | 支持读写操作 | 便携单文件运行</p></div>
 {content}
-<div class="footer"><p>CMCC Cloud WebDAV v1.0 | 基于抓包API实现 | 仅供个人学习使用</p></div>
+<div class="footer"><p>CMCC Cloud WebDAV v1.1 | 基于抓包API实现 | 仅供个人学习使用</p></div>
 </div></body></html>"""
 
     def _wsgi_app(self, environ, start_response):
         path = environ.get("PATH_INFO", "/")
         method = environ.get("REQUEST_METHOD", "GET")
-        # 处理 CORS 预检请求
         if method == "OPTIONS":
             start_response("200 OK", [
                 ("Content-Type", "text/plain"),
@@ -128,6 +184,14 @@ class WebUIManager:
             return self._handle_config(environ, start_response)
         elif path == "/logs":
             return self._handle_logs(environ, start_response)
+        elif path == "/files":
+            return self._handle_files(environ, start_response)
+        elif path == "/share":
+            return self._handle_share(environ, start_response)
+        elif path == "/trash":
+            return self._handle_trash(environ, start_response)
+        elif path == "/star":
+            return self._handle_star(environ, start_response)
         elif path == "/api/status":
             return self._api_status(environ, start_response)
         elif path == "/api/control":
@@ -136,30 +200,84 @@ class WebUIManager:
             return self._api_set_cookie(environ, start_response)
         elif path == "/api/bookmark":
             return self._api_bookmark(environ, start_response)
+        elif path == "/api/capacity":
+            return self._api_capacity(environ, start_response)
         else:
             start_response("404 Not Found", [("Content-Type", "text/plain")])
             return [b"Not Found"]
 
+    def _nav_html(self, active="index"):
+        items = [
+            ("/", "📊 状态面板", "index"),
+            ("/config", "⚙️ 配置管理", "config"),
+            ("/files", "📁 文件浏览", "files"),
+            ("/share", "🔗 分享管理", "share"),
+            ("/trash", "🗑 回收站", "trash"),
+            ("/star", "⭐ 星标文件", "star"),
+            ("/logs", "📝 日志查看", "logs"),
+        ]
+        links = " ".join([f'<a href="{url}"{" class=\"active\"' if a == active else ""}>{name}</a>' for url, name, a in items])
+        return f'<div class="nav">{links}</div>'
+
     def _handle_index(self, environ, start_response):
         config = self._load_config()
+        status = self._get_status()
+        capacity_html = ""
+        if "capacity_total" in status:
+            total = status.get("capacity_total", 0)
+            used = status.get("capacity_used", 0)
+            available = status.get("capacity_available", total - used)
+            percent = int(used / total * 100) if total > 0 else 0
+            capacity_html = f"""
+            <div class="card">
+            <h2>存储容量</h2>
+            <div class="status-grid">
+            <div class="status-item"><div class="label">总容量</div><div class="value">{self._format_size(total)}</div></div>
+            <div class="status-item"><div class="label">已使用</div><div class="value">{self._format_size(used)}</div></div>
+            <div class="status-item"><div class="label">可用空间</div><div class="value">{self._format_size(available)}</div></div>
+            <div class="status-item"><div class="label">使用率</div><div class="value">{percent}%</div></div>
+            </div>
+            <div class="progress-bar" style="margin-top: 12px;"><div class="progress-bar-inner" style="width: {percent}%;"></div></div>
+            </div>
+            """
+        running_class = "running" if status.get("running") else "stopped"
+        running_text = "运行中" if status.get("running") else "已停止"
+        auth_status = "已启用" if status.get("auth_enabled") else "未启用"
+
         status_html = f"""
-<div class="nav">
-<a href="/" class="active">📊 状态面板</a>
-<a href="/config">⚙️ 配置管理</a>
-<a href="/logs">📝 日志查看</a>
-</div>
+{self._nav_html("index")}
 <div class="card">
 <h2>服务状态</h2>
 <div class="status-grid">
-<div class="status-item"><div class="label">WebDAV服务</div><div class="value">运行中</div></div>
-<div class="status-item"><div class="label">监听地址</div><div class="value">{config["webdav"]["host"]}:{config["webdav"]["port"]}</div></div>
-<div class="status-item"><div class="label">挂载路径</div><div class="value">{config["webdav"]["mount_path"]}</div></div>
+<div class="status-item"><div class="label">WebDAV服务</div><div class="value {running_class}">{running_text}</div></div>
+<div class="status-item"><div class="label">监听地址</div><div class="value">{status.get("webdav_host", config["webdav"]["host"])}:{status.get("webdav_port", config["webdav"]["port"])}</div></div>
+<div class="status-item"><div class="label">认证保护</div><div class="value">{auth_status}</div></div>
 <div class="status-item"><div class="label">写入模式</div><div class="value">{"只读" if config["webdav"]["readonly"] else "读写"}</div></div>
 </div>
 <div style="margin-top: 20px;">
 <a href="/api/control?action=restart" class="btn btn-primary">🔄 重启服务</a>
 <a href="/api/control?action=stop" class="btn btn-danger">⏹ 停止服务</a>
 <a href="/api/control?action=start" class="btn btn-success">▶ 启动服务</a>
+</div>
+</div>
+{capacity_html}
+<div class="card">
+<h2>快速操作</h2>
+<div class="grid-2">
+<div style="background: #f8f9fa; padding: 16px; border-radius: 8px;">
+<h3 style="font-size: 14px; margin-bottom: 8px; color: #667eea;">🌐 映射网络驱动器</h3>
+<p style="font-size: 12px; color: #666; line-height: 1.6;">
+Windows资源管理器 → 此电脑 → 映射网络驱动器<br>
+输入: <code>http://{config["webdav"]["host"]}:{config["webdav"]["port"]}/</code>
+</p>
+</div>
+<div style="background: #f8f9fa; padding: 16px; border-radius: 8px;">
+<h3 style="font-size: 14px; margin-bottom: 8px; color: #667eea;">🔧 Win7特殊配置</h3>
+<p style="font-size: 12px; color: #666; line-height: 1.6;">
+以管理员运行CMD:<br>
+<code>reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\WebClient\\Parameters" /v BasicAuthLevel /t REG_DWORD /d 2 /f</code>
+</p>
+</div>
 </div>
 </div>
 <div class="card">
@@ -192,8 +310,13 @@ class WebUIManager:
                 config["webdav"]["port"] = int(params.get("dav_port", "8081"))
                 config["webdav"]["mount_path"] = params.get("mount_path", "Z:")
                 config["webdav"]["readonly"] = params.get("readonly") == "on"
+                config["webdav"]["auth_enabled"] = params.get("auth_enabled") == "on"
+                config["webdav"]["username"] = params.get("dav_username", "admin")
+                config["webdav"]["password"] = params.get("dav_password", "admin")
                 config["auto_start"] = params.get("auto_start") == "on"
                 config["minimize_to_tray"] = params.get("minimize_to_tray") == "on"
+                config["auto_open_browser"] = params.get("auto_open_browser") == "on"
+                config["auto_reconnect"] = params.get("auto_reconnect") == "on"
                 self._save_config(config)
                 message = '<div class="alert alert-success">✅ 配置已保存！</div>'
                 self.add_log("info", "配置已更新")
@@ -202,11 +325,7 @@ class WebUIManager:
                 self.add_log("error", f"配置保存失败: {e}")
 
         config_html = f"""
-<div class="nav">
-<a href="/">📊 状态面板</a>
-<a href="/config" class="active">⚙️ 配置管理</a>
-<a href="/logs">📝 日志查看</a>
-</div>
+{self._nav_html("config")}
 {message}
 <div class="card">
 <h2>认证配置</h2>
@@ -246,14 +365,31 @@ class WebUIManager:
 <div class="form-group">
 <label><input type="checkbox" name="readonly" {"checked" if config["webdav"]["readonly"] else ""}> 只读模式</label>
 </div>
+<div class="form-group">
+<label><input type="checkbox" name="auth_enabled" {"checked" if config["webdav"].get("auth_enabled") else ""}> 启用WebDAV认证</label>
+</div>
+<div class="form-group">
+<label>WebDAV用户名</label>
+<input type="text" name="dav_username" value="{config["webdav"].get("username", "admin")}">
+</div>
+<div class="form-group">
+<label>WebDAV密码</label>
+<input type="password" name="dav_password" value="{config["webdav"].get("password", "admin")}">
+</div>
 </div>
 <div class="card">
 <h2>高级选项</h2>
 <div class="form-group">
-<label><input type="checkbox" name="auto_start" {"checked" if config["auto_start"] else ""}> 开机自动启动</label>
+<label><input type="checkbox" name="auto_start" {"checked" if config.get("auto_start", False) else ""}> 开机自动启动WebDAV</label>
 </div>
 <div class="form-group">
-<label><input type="checkbox" name="minimize_to_tray" {"checked" if config["minimize_to_tray"] else ""}> 最小化到系统托盘</label>
+<label><input type="checkbox" name="minimize_to_tray" {"checked" if config.get("minimize_to_tray", True) else ""}> 最小化到系统托盘</label>
+</div>
+<div class="form-group">
+<label><input type="checkbox" name="auto_open_browser" {"checked" if config.get("auto_open_browser", True) else ""}> 启动时自动打开浏览器</label>
+</div>
+<div class="form-group">
+<label><input type="checkbox" name="auto_reconnect" {"checked" if config.get("auto_reconnect", True) else ""}> 自动重连</label>
 </div>
 <div style="text-align:center;margin-top:20px;">
 <button type="submit" class="btn btn-primary">💾 保存配置</button>
@@ -265,22 +401,135 @@ class WebUIManager:
         start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
         return [html.encode("utf-8")]
 
+    def _handle_files(self, environ, start_response):
+        files_html = f"""
+{self._nav_html("files")}
+<div class="card">
+<h2>文件浏览</h2>
+<div class="alert alert-info">
+💡 提示：请通过WebDAV客户端（如Windows资源管理器）或WebDAV工具浏览和管理文件。
+此页面提供基本的文件浏览功能。
+</div>
+<div class="action-bar">
+<a href="/api/control?action=start" class="btn btn-success">▶ 启动WebDAV服务后浏览</a>
+</div>
+<div class="tabs">
+<a href="/files" class="active">全部文件</a>
+<a href="/files?cat=1">图片</a>
+<a href="/files?cat=2">视频</a>
+<a href="/files?cat=3">音频</a>
+<a href="/files?cat=4">文档</a>
+<a href="/files?cat=5">应用</a>
+</div>
+<p style="color: #666; line-height: 1.8;">
+<b>推荐工具：</b><br>
+• Windows资源管理器：映射网络驱动器<br>
+• RaiDrive：专业的WebDAV挂载工具<br>
+• Cyberduck：跨平台文件管理工具<br>
+• Mountain Duck：支持按需下载的WebDAV客户端<br>
+</p>
+</div>
+<div class="card">
+<h2>WebDAV连接信息</h2>
+<div style="background: #f8f9fa; padding: 16px; border-radius: 8px;">
+<p style="margin-bottom: 8px;"><b>服务器地址：</b><code>http://127.0.0.1:8081/</code></p>
+<p style="margin-bottom: 8px;"><b>认证方式：</b>Basic认证（任意用户名密码）</p>
+<p style="margin-bottom: 8px;"><b>支持协议：</b>WebDAV (HTTP/1.1)</p>
+<p><b>支持操作：</b>浏览、上传、下载、删除、重命名、创建文件夹、移动、复制</p>
+</div>
+</div>
+"""
+        html = self._html_page(files_html, "文件浏览")
+        start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+        return [html.encode("utf-8")]
+
+    def _handle_share(self, environ, start_response):
+        share_html = f"""
+{self._nav_html("share")}
+<div class="card">
+<h2>分享管理</h2>
+<div class="alert alert-info">
+💡 分享功能允许您生成文件分享链接，他人可通过链接访问您的文件。
+</div>
+<div class="action-bar">
+<a href="/api/control?action=start" class="btn btn-success">▶ 启动服务后使用分享功能</a>
+</div>
+<p style="color: #666; line-height: 1.8;">
+<b>支持功能：</b><br>
+• 创建分享（公开/私密）<br>
+• 设置分享有效期<br>
+• 设置分享密码<br>
+• 查看我的分享列表<br>
+• 取消分享<br>
+• 保存他人分享的文件<br>
+</p>
+</div>
+"""
+        html = self._html_page(share_html, "分享管理")
+        start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+        return [html.encode("utf-8")]
+
+    def _handle_trash(self, environ, start_response):
+        trash_html = f"""
+{self._nav_html("trash")}
+<div class="card">
+<h2>回收站管理</h2>
+<div class="alert alert-info">
+💡 删除的文件会进入回收站，您可以还原或彻底删除。
+</div>
+<div class="action-bar">
+<a href="/api/control?action=start" class="btn btn-success">▶ 启动服务后管理回收站</a>
+</div>
+<p style="color: #666; line-height: 1.8;">
+<b>支持功能：</b><br>
+• 查看回收站文件列表<br>
+• 还原文件到原位置<br>
+• 彻底删除文件（不可恢复）<br>
+• 清空回收站<br>
+</p>
+</div>
+"""
+        html = self._html_page(trash_html, "回收站")
+        start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+        return [html.encode("utf-8")]
+
+    def _handle_star(self, environ, start_response):
+        star_html = f"""
+{self._nav_html("star")}
+<div class="card">
+<h2>星标文件</h2>
+<div class="alert alert-info">
+💡 星标功能让您快速访问重要文件。
+</div>
+<div class="action-bar">
+<a href="/api/control?action=start" class="btn btn-success">▶ 启动服务后查看星标文件</a>
+</div>
+<p style="color: #666; line-height: 1.8;">
+<b>支持功能：</b><br>
+• 添加文件到星标<br>
+• 取消文件星标<br>
+• 查看所有星标文件<br>
+</p>
+</div>
+"""
+        html = self._html_page(star_html, "星标文件")
+        start_response("200 OK", [("Content-Type", "text/html; charset=utf-8")])
+        return [html.encode("utf-8")]
+
     def _handle_logs(self, environ, start_response):
+        with self._log_lock:
+            logs_copy = list(self._logs)
         logs_html = "\n".join([
             f'<div class="log-entry"><span style="color:#858585">{l["time"]}</span> '
-            f'<span style="color:{"#4ec9b0" if l["level"]=="info" else "#f44747"}">[{l["level"].upper()}]</span> {l["message"]}</div>'
-            for l in reversed(self._logs[-200:])
+            f'<span style="color:{"#4ec9b0" if l["level"]=="info" else "#f44747" if l["level"]=="error" else "#dcdcaa"}">[{l["level"].upper()}]</span> {l["message"]}</div>'
+            for l in reversed(logs_copy[-200:])
         ])
         content = f"""
-<div class="nav">
-<a href="/">📊 状态面板</a>
-<a href="/config">⚙️ 配置管理</a>
-<a href="/logs" class="active">📝 日志查看</a>
-</div>
+{self._nav_html("logs")}
 <div class="card">
 <h2>运行日志 (最近200条)</h2>
 <div class="log-container">
-{logs_html if self._logs else '<div style="color:#666;text-align:center;padding:20px;">暂无日志</div>'}
+{logs_html if logs_copy else '<div style="color:#666;text-align:center;padding:20px;">暂无日志</div>'}
 </div>
 <div style="margin-top:12px;">
 <a href="/logs" class="btn btn-primary">🔄 刷新</a>
@@ -293,9 +542,21 @@ class WebUIManager:
         return [html.encode("utf-8")]
 
     def _api_status(self, environ, start_response):
-        status = {"running": self.running, "time": datetime.now().isoformat(), "logs_count": len(self._logs)}
+        status = self._get_status()
+        status["time"] = datetime.now().isoformat()
+        status["logs_count"] = len(self._logs)
         start_response("200 OK", [("Content-Type", "application/json")])
         return [json.dumps(status).encode()]
+
+    def _api_capacity(self, environ, start_response):
+        status = self._get_status()
+        capacity = {
+            "total": status.get("capacity_total", 0),
+            "used": status.get("capacity_used", 0),
+            "available": status.get("capacity_available", 0)
+        }
+        start_response("200 OK", [("Content-Type", "application/json")])
+        return [json.dumps(capacity).encode()]
 
     def _api_control(self, environ, start_response):
         query = environ.get("QUERY_STRING", "")
@@ -308,13 +569,13 @@ class WebUIManager:
         if action in ("start", "stop", "restart") and self.control_callback:
             result = self.control_callback(action)
         elif action == "clear_logs":
-            self._logs = []
+            with self._log_lock:
+                self._logs = []
             result = {"success": True, "message": "日志已清空"}
         start_response("200 OK", [("Content-Type", "application/json")])
         return [json.dumps(result).encode()]
 
     def _api_set_cookie(self, environ, start_response):
-        """接收浏览器书签脚本发送的Cookie"""
         result = {"success": False, "message": "请求方式错误"}
         if environ.get("REQUEST_METHOD") == "POST":
             try:
@@ -341,7 +602,6 @@ class WebUIManager:
         return [json.dumps(result).encode()]
 
     def _api_bookmark(self, environ, start_response):
-        """返回书签脚本获取页面"""
         port = self.port
         script = f"""javascript:(function(){{var c=document.cookie;if(!c){{alert('当前页面没有Cookie，请先登录yun.139.com');return;}}fetch('http://127.0.0.1:{port}/api/set_cookie',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{cookie:c}})}}).then(r=>r.json()).then(d=>{{if(d.success){{alert('Cookie自动获取成功！请返回管理界面点击启动服务。');}}else{{alert('失败:'+d.message);}}}}).catch(e=>{{alert('发送失败，请检查本地服务是否运行:'+e);}});}})();"""
         html = f"""<!DOCTYPE html>

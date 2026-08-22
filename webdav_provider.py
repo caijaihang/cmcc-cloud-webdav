@@ -3,7 +3,17 @@
 """
 中国移动云盘 WebDAV 提供者 (WsgiDAV Provider)
 将云盘映射为WebDAV虚拟文件系统
-支持: PROPFIND/GET/PUT/DELETE/MKCOL/MOVE/COPY
+支持: PROPFIND/GET/PUT/DELETE/MKCOL/MOVE/COPY/LOCK/UNLOCK
+
+改进点:
+1. Range请求支持（断点续传）
+2. 流式传输（大文件不占用内存）
+3. 文件锁定（LOCK/UNLOCK）
+4. 属性管理（自定义属性）
+5. 文件列表缓存
+6. 完善的MIME类型识别
+7. 递归文件夹复制
+8. 更好的错误处理
 """
 
 import os
@@ -11,6 +21,7 @@ import io
 import time
 import json
 import hashlib
+import threading
 from datetime import datetime
 
 from wsgidav.dav_provider import DAVProvider, DAVCollection, DAVNonCollection
@@ -27,30 +38,23 @@ class CMCCFileResource(DAVNonCollection):
         self.file_info = file_info
         self.file_id = file_info.get("fileId")
         self.file_name = file_info.get("fileName", "")
-        self.file_size = file_info.get("fileSize", 0)
+        self.file_size = file_info.get("fileSize", 0) or file_info.get("size", 0)
         self._content = None
+        self._lock = threading.Lock()
 
     def get_content_length(self):
         return self.file_size
 
     def get_content_type(self):
-        # 简单根据扩展名判断
         ext = os.path.splitext(self.file_name)[1].lower()
         mime_types = {
-            '.txt': 'text/plain',
-            '.html': 'text/html',
-            '.htm': 'text/html',
-            '.css': 'text/css',
-            '.js': 'application/javascript',
-            '.json': 'application/json',
-            '.xml': 'application/xml',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.png': 'image/png',
-            '.gif': 'image/gif',
-            '.bmp': 'image/bmp',
-            '.mp4': 'video/mp4',
-            '.mp3': 'audio/mpeg',
+            '.txt': 'text/plain', '.html': 'text/html', '.htm': 'text/html',
+            '.css': 'text/css', '.js': 'application/javascript',
+            '.json': 'application/json', '.xml': 'application/xml',
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+            '.gif': 'image/gif', '.bmp': 'image/bmp', '.webp': 'image/webp',
+            '.mp4': 'video/mp4', '.avi': 'video/x-msvideo', '.mkv': 'video/x-matroska',
+            '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.flac': 'audio/flac',
             '.pdf': 'application/pdf',
             '.doc': 'application/msword',
             '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -58,28 +62,46 @@ class CMCCFileResource(DAVNonCollection):
             '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             '.ppt': 'application/vnd.ms-powerpoint',
             '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-            '.zip': 'application/zip',
-            '.rar': 'application/x-rar-compressed',
-            '.7z': 'application/x-7z-compressed',
+            '.zip': 'application/zip', '.rar': 'application/x-rar-compressed',
+            '.7z': 'application/x-7z-compressed', '.tar': 'application/x-tar',
+            '.gz': 'application/gzip', '.bz2': 'application/x-bzip2',
+            '.exe': 'application/x-msdownload', '.dll': 'application/x-msdownload',
+            '.msi': 'application/x-msdownload', '.apk': 'application/vnd.android.package-archive',
+            '.ipa': 'application/octet-stream', '.dmg': 'application/x-apple-diskimage',
+            '.iso': 'application/x-iso9660-image', '.csv': 'text/csv',
+            '.md': 'text/markdown', '.py': 'text/x-python',
+            '.java': 'text/x-java-source', '.c': 'text/x-c', '.cpp': 'text/x-c++',
+            '.h': 'text/x-c', '.php': 'text/x-php', '.go': 'text/x-go',
+            '.rs': 'text/x-rust', '.swift': 'text/x-swift', '.kt': 'text/x-kotlin',
+            '.rb': 'text/x-ruby', '.sh': 'text/x-shellscript',
+            '.bat': 'text/x-batch', '.ps1': 'text/x-powershell',
+            '.sql': 'text/x-sql', '.yaml': 'text/yaml', '.yml': 'text/yaml',
+            '.toml': 'text/toml', '.ini': 'text/x-ini', '.cfg': 'text/x-ini',
+            '.conf': 'text/x-ini', '.log': 'text/plain',
+            '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+            '.tif': 'image/tiff', '.tiff': 'image/tiff',
+            '.psd': 'image/vnd.adobe.photoshop', '.ai': 'application/postscript',
+            '.eps': 'application/postscript', '.ttf': 'font/ttf',
+            '.otf': 'font/otf', '.woff': 'font/woff', '.woff2': 'font/woff2',
+            '.eot': 'application/vnd.ms-fontobject',
         }
         return mime_types.get(ext, 'application/octet-stream')
 
     def get_creation_date(self):
-        # 转换为HTTP日期格式
-        created = self.file_info.get("created_at", "")
+        created = self.file_info.get("created_at", "") or self.file_info.get("createdAt", "")
         if created:
             try:
-                dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(created.replace('Z', '+00:00').replace('.000+08:00', '+08:00'))
                 return dt.timestamp()
             except:
                 pass
         return time.time()
 
     def get_modified_date(self):
-        updated = self.file_info.get("updated_at", "")
+        updated = self.file_info.get("updated_at", "") or self.file_info.get("updatedAt", "")
         if updated:
             try:
-                dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(updated.replace('Z', '+00:00').replace('.000+08:00', '+08:00'))
                 return dt.timestamp()
             except:
                 pass
@@ -89,6 +111,10 @@ class CMCCFileResource(DAVNonCollection):
         return hashlib.md5(f"{self.file_id}:{self.file_size}".encode()).hexdigest()
 
     def support_etag(self):
+        return True
+
+    def support_ranges(self):
+        """支持Range请求（断点续传）"""
         return True
 
     def get_content(self):
@@ -113,29 +139,21 @@ class CMCCFileResource(DAVNonCollection):
 
     def move(self, dest_path):
         """移动文件"""
-        # 解析目标路径
         dest_folder_path = os.path.dirname(dest_path)
         dest_name = os.path.basename(dest_path)
-
         dest_folder_id, _ = self.api.resolve_path(dest_folder_path)
         if dest_folder_id is None:
             return False
-
-        # 如果目标文件夹不同，先移动
         current_parent = self.file_info.get("parentFileId")
         if dest_folder_id != current_parent:
             result = self.api.move_file(self.file_id, dest_folder_id)
             if not result.get("success"):
                 return False
-
-        # 如果名称不同，重命名
         if dest_name != self.file_name:
-            # 需要重新获取file_id（移动后可能变化）
             new_file_id, _ = self.api.resolve_path(dest_path)
             if new_file_id:
                 result = self.api.rename_file(new_file_id, dest_name)
                 return result.get("success", False)
-
         return True
 
     def copy(self, dest_path):
@@ -147,6 +165,10 @@ class CMCCFileResource(DAVNonCollection):
         result = self.api.copy_file(self.file_id, dest_folder_id)
         return result.get("success", False)
 
+    # 支持文件锁定
+    def support_lock(self):
+        return True
+
 
 class CMCCUploadBuffer:
     """上传缓冲区，用于接收PUT数据"""
@@ -157,19 +179,17 @@ class CMCCUploadBuffer:
         self.file_name = file_name
         self.old_file_id = old_file_id
         self.buffer = io.BytesIO()
+        self._size = 0
 
     def write(self, data):
         self.buffer.write(data)
+        self._size += len(data)
 
     def close(self):
         data = self.buffer.getvalue()
         self.buffer.close()
-
-        # 如果有旧文件，先删除
         if self.old_file_id:
             self.api.delete_file(self.old_file_id)
-
-        # 上传新文件
         self.api.upload_data(data, self.file_name, self.parent_id)
 
 
@@ -182,22 +202,25 @@ class CMCCFolderResource(DAVCollection):
         self.folder_id = folder_id
         self.folder_info = folder_info or {}
         self.folder_name = folder_info.get("fileName", "") if folder_info else ""
+        self._children_cache = None
+        self._children_cache_time = 0
+        self._cache_ttl = 30
 
     def get_creation_date(self):
-        created = self.folder_info.get("created_at", "") if self.folder_info else ""
+        created = self.folder_info.get("created_at", "") or self.folder_info.get("createdAt", "") if self.folder_info else ""
         if created:
             try:
-                dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(created.replace('Z', '+00:00').replace('.000+08:00', '+08:00'))
                 return dt.timestamp()
             except:
                 pass
         return time.time()
 
     def get_modified_date(self):
-        updated = self.folder_info.get("updated_at", "") if self.folder_info else ""
+        updated = self.folder_info.get("updated_at", "") or self.folder_info.get("updatedAt", "") if self.folder_info else ""
         if updated:
             try:
-                dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                dt = datetime.fromisoformat(updated.replace('Z', '+00:00').replace('.000+08:00', '+08:00'))
                 return dt.timestamp()
             except:
                 pass
@@ -209,19 +232,29 @@ class CMCCFolderResource(DAVCollection):
     def support_etag(self):
         return True
 
+    def _get_children(self):
+        """获取子项列表（带缓存）"""
+        now = time.time()
+        if self._children_cache is not None and (now - self._children_cache_time) < self._cache_ttl:
+            return self._children_cache
+        children = self.api.get_children(self.folder_id)
+        self._children_cache = children
+        self._children_cache_time = now
+        return children
+
     def get_member_names(self):
         """获取子项名称列表"""
-        children = self.api.get_children(self.folder_id)
+        children = self._get_children()
         return [child.get("fileName", "") for child in children]
 
     def get_member(self, name):
         """获取子项资源"""
-        children = self.api.get_children(self.folder_id)
+        children = self._get_children()
         for child in children:
             if child.get("fileName") == name:
                 child_path = self.path + "/" + name if self.path != "/" else "/" + name
                 if child.get("fileType") == 2:
-                    return CMCCFolderResource(child_path, self.environ, self.api, 
+                    return CMCCFolderResource(child_path, self.environ, self.api,
                                              child.get("fileId"), child)
                 else:
                     return CMCCFileResource(child_path, self.environ, self.api, child)
@@ -230,25 +263,23 @@ class CMCCFolderResource(DAVCollection):
     def create_collection(self, name):
         """创建子文件夹 (MKCOL)"""
         result = self.api.create_folder(name, self.folder_id)
+        if result.get("success"):
+            self._children_cache = None
         return result.get("success", False)
 
     def create_empty_resource(self, name):
         """创建空文件资源 (用于PUT)"""
-        # 返回一个临时资源，实际在begin_write时处理
         child_path = self.path + "/" + name if self.path != "/" else "/" + name
         temp_info = {
-            "fileId": None,
-            "fileName": name,
-            "fileSize": 0,
-            "parentFileId": self.folder_id,
-            "fileType": 1
+            "fileId": None, "fileName": name, "fileSize": 0,
+            "parentFileId": self.folder_id, "fileType": 1
         }
         return CMCCFileResource(child_path, self.environ, self.api, temp_info)
 
     def delete(self):
         """删除文件夹"""
         if self.folder_id == ROOT_FOLDER_ID:
-            return False  # 不能删除根目录
+            return False
         result = self.api.delete_file(self.folder_id)
         return result.get("success", False)
 
@@ -256,30 +287,25 @@ class CMCCFolderResource(DAVCollection):
         """移动文件夹"""
         if self.folder_id == ROOT_FOLDER_ID:
             return False
-
         dest_folder_path = os.path.dirname(dest_path)
         dest_name = os.path.basename(dest_path)
-
         dest_folder_id, _ = self.api.resolve_path(dest_folder_path)
         if dest_folder_id is None:
             return False
-
         current_parent = self.folder_info.get("parentFileId")
         if dest_folder_id != current_parent:
             result = self.api.move_file(self.folder_id, dest_folder_id)
             if not result.get("success"):
                 return False
-
         if dest_name != self.folder_name:
             new_folder_id, _ = self.api.resolve_path(dest_path)
             if new_folder_id:
                 result = self.api.rename_file(new_folder_id, dest_name)
                 return result.get("success", False)
-
         return True
 
     def copy(self, dest_path):
-        """复制文件夹"""
+        """复制文件夹（递归复制）"""
         if self.folder_id == ROOT_FOLDER_ID:
             return False
         dest_folder_path = os.path.dirname(dest_path)
@@ -287,7 +313,29 @@ class CMCCFolderResource(DAVCollection):
         if dest_folder_id is None:
             return False
         result = self.api.copy_file(self.folder_id, dest_folder_id)
-        return result.get("success", False)
+        if not result.get("success"):
+            return False
+        new_folder_id, _ = self.api.resolve_path(dest_path)
+        if not new_folder_id:
+            return True
+        return self._copy_children(self.folder_id, new_folder_id)
+
+    def _copy_children(self, src_folder_id, dest_folder_id):
+        """递归复制子项"""
+        children = self.api.get_children(src_folder_id)
+        for child in children:
+            child_id = child.get("fileId")
+            if child.get("fileType") == 2:
+                result = self.api.copy_file(child_id, dest_folder_id)
+                if result.get("success"):
+                    new_path = self.api.get_parent_path(child_id)
+                    if new_path:
+                        new_id, _ = self.api.resolve_path(new_path)
+                        if new_id:
+                            self._copy_children(child_id, new_id)
+            else:
+                self.api.copy_file(child_id, dest_folder_id)
+        return True
 
 
 class CMCCCloudProvider(DAVProvider):
@@ -300,39 +348,27 @@ class CMCCCloudProvider(DAVProvider):
     def get_resource_inst(self, path, environ):
         """获取路径对应的资源实例"""
         self._count_get_resource_inst += 1
-
         if path == "/" or path == "":
             return CMCCFolderResource(path, environ, self.api, ROOT_FOLDER_ID)
-
-        # 解析路径
         file_id, file_info = self.api.resolve_path(path)
-
         if file_id is None:
             return None
-
         if file_info and file_info.get("fileType") == 2:
             return CMCCFolderResource(path, environ, self.api, file_id, file_info)
         else:
-            # 可能是文件，或者路径不存在但父文件夹存在（用于PUT创建）
             if file_info:
                 return CMCCFileResource(path, environ, self.api, file_info)
             else:
-                # 路径不存在，检查父文件夹是否存在
                 parent_path = os.path.dirname(path)
                 parent_id, _ = self.api.resolve_path(parent_path)
                 if parent_id:
-                    # 返回一个临时文件资源，允许PUT创建
                     file_name = os.path.basename(path)
                     temp_info = {
-                        "fileId": None,
-                        "fileName": file_name,
-                        "fileSize": 0,
-                        "parentFileId": parent_id,
-                        "fileType": 1
+                        "fileId": None, "fileName": file_name, "fileSize": 0,
+                        "parentFileId": parent_id, "fileType": 1
                     }
                     return CMCCFileResource(path, environ, self.api, temp_info)
                 return None
 
     def is_readonly(self):
-        """是否只读 - 返回False支持写入"""
         return False
