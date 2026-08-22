@@ -192,6 +192,13 @@ buildozer android debug
 ### GitHub Actions 自动打包
 Push 到 main 分支自动触发，支持 Windows/Linux/macOS/Android。
 
+**发布流程（不经过 Artifacts）：**
+1. `create-release` job 先创建 Release（自动生成版本号）
+2. 四个平台并行构建，构建完成后**直接通过 `gh release upload` 上传到 Release**
+3. **不经过 Artifacts**，即使个别平台构建失败也不影响其他平台发布
+
+**下载方式：** 仓库 → **Releases** → **Latest**，直接下载各平台可执行文件。
+
 ## 配置加密
 
 使用 AES-256-GCM 加密保护配置文件中的 Cookie 等敏感信息：
